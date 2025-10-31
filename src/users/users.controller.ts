@@ -1,95 +1,54 @@
 import {
   Controller,
   Get,
-  Post,
   Body,
   Patch,
   Param,
-  Delete,
-  Query,
   UseGuards,
-  Request,
+  Req,
+  Post,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
-import { User } from '../entities/user.entity';
-import { CreateUserDto } from '../dto/create-user.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { UpdateUserDto } from './dto/update-user.dto';
+import { JwtAuthGuard } from '../common/guards/jwt.guard';
+import getUserFromReq from '../common/helpers/current-user.helper';
+import { FindUserDto } from './dto/find-users.dto';
 
+@UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
-  @Post()
-  create(@Body() createUserDto: CreateUserDto) {
-    return this.usersService.create(createUserDto);
+  @Get('me')
+  getCurrentUser(@Req() req) {
+    const id = getUserFromReq(req)?.id;
+    return this.usersService.findById(id, true);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get()
-  findAll(@Query() query: any) {
-    const findOptions: any = {};
-
-    if (query.where) {
-      try {
-        findOptions.where = JSON.parse(query.where);
-      } catch (e) {
-        if (query.email) findOptions.where = { email: query.email };
-        if (query.username)
-          findOptions.where = {
-            ...findOptions.where,
-            username: query.username,
-          };
-      }
-    }
-
-    if (query.relations) {
-      findOptions.relations = query.relations.split(',');
-    }
-
-    if (query.take) findOptions.take = parseInt(query.take);
-    if (query.skip) findOptions.skip = parseInt(query.skip);
-
-    return this.usersService.findMany(findOptions);
+  @Patch('me')
+  updateCurrentUser(@Req() req, @Body() updateUserDto: UpdateUserDto) {
+    const id = getUserFromReq(req)?.id;
+    return this.usersService.update(id, updateUserDto);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.usersService.findById(+id);
+  @Get('me/wishes')
+  getWishes(@Req() req) {
+    const id = getUserFromReq(req)?.id;
+    return this.usersService.getUserWishes(id);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get(':id/wishlists')
-  findUserWithWishlists(@Param('id') id: string) {
-    return this.usersService.findUserWithWishlists(+id);
+  @Get(':username')
+  findByUsername(@Param('username') username: string) {
+    return this.usersService.findByUsername(username);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get(':id/offers')
-  findUserWithOffers(@Param('id') id: string) {
-    return this.usersService.findUserWithOffers(+id);
+  @Get(':username/wishes')
+  findWishesByUsername(@Param('username') username: string) {
+    return this.usersService.getWishesByUsername(username);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get(':id/wishes')
-  findUserWithWishes(@Param('id') id: string) {
-    return this.usersService.findUserWithWishes(+id);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Patch(':id')
-  async update(
-    @Param('id') id: string,
-    @Body() updateUserDto: Partial<User>,
-    @Request() req,
-  ) {
-    return this.usersService.updateUserSafely(+id, req.user.id, updateUserDto);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Delete(':id')
-  async remove(@Param('id') id: string, @Request() req) {
-    const result = await this.usersService.deleteUserSafely(+id, req.user.id);
-    return { success: result, message: 'Профиль успешно удален' };
+  @Post('find')
+  findMany(@Body() findUserDto: FindUserDto) {
+    return this.usersService.findMany(findUserDto.query.toLowerCase());
   }
 }
