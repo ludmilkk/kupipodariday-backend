@@ -3,17 +3,17 @@ import {
   Get,
   Post,
   Body,
-  Patch,
-  Param,
-  Delete,
-  Query,
+  Req,
   UseGuards,
-  Request,
+  Param,
+  Patch,
+  Delete,
 } from '@nestjs/common';
 import { WishesService } from './wishes.service';
-import { Wish } from '../entities/wish.entity';
-import { CreateWishDto } from '../dto/create-wish.dto';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CreateWishDto } from './dto/create-wish.dto';
+import { UpdateWishDto } from './dto/update-wish.dto';
+import getUserFromReq from '../common/helpers/current-user.helper';
+import { JwtAuthGuard } from '../common/guards/jwt.guard';
 
 @Controller('wishes')
 export class WishesController {
@@ -21,78 +21,49 @@ export class WishesController {
 
   @UseGuards(JwtAuthGuard)
   @Post()
-  create(@Body() createWishDto: CreateWishDto, @Request() req) {
-    // Устанавливаем ownerId из аутентифицированного пользователя
-    createWishDto.ownerId = req.user.id;
-    return this.wishesService.create(createWishDto);
+  create(@Req() req, @Body() createWishDto: CreateWishDto) {
+    const user = getUserFromReq(req);
+    return this.wishesService.create(user, createWishDto);
   }
 
-  @Get()
-  findAll(@Query() query: any) {
-    const findOptions: any = {};
-
-    if (query.where) {
-      try {
-        findOptions.where = JSON.parse(query.where);
-      } catch (e) {
-        if (query.ownerId) findOptions.where = { owner: { id: query.ownerId } };
-        if (query.wishlistId)
-          findOptions.where = {
-            ...findOptions.where,
-            wishlist: { id: query.wishlistId },
-          };
-      }
-    }
-
-    if (query.relations) {
-      findOptions.relations = query.relations.split(',');
-    }
-
-    if (query.take) findOptions.take = parseInt(query.take);
-    if (query.skip) findOptions.skip = parseInt(query.skip);
-
-    return this.wishesService.findMany(findOptions);
+  @Get('last')
+  findLatest() {
+    return this.wishesService.findLatest();
   }
 
+  @Get('top')
+  findTop() {
+    return this.wishesService.findTop();
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.wishesService.findById(+id);
-  }
-
-  @Get(':id/offers')
-  findWishWithOffers(@Param('id') id: string) {
-    return this.wishesService.findWishWithOffers(+id);
-  }
-
-  @Get('wishlist/:wishlistId')
-  findByWishlist(@Param('wishlistId') wishlistId: string) {
-    return this.wishesService.findByWishlist(+wishlistId);
-  }
-
-  @Get('owner/:ownerId')
-  findByOwner(@Param('ownerId') ownerId: string) {
-    return this.wishesService.findByOwner(+ownerId);
-  }
-
-  @Get(':id/raised')
-  calculateTotalRaised(@Param('id') id: string) {
-    return this.wishesService.calculateTotalRaised(+id);
+  findOne(@Param('id') id: number) {
+    return this.wishesService.findById(id);
   }
 
   @UseGuards(JwtAuthGuard)
-  @Patch(':id')
-  async update(
-    @Param('id') id: string,
-    @Body() updateWishDto: Partial<Wish>,
-    @Request() req,
+  @Patch(':wishId')
+  update(
+    @Param('wishId') wishId: number,
+    @Req() req,
+    @Body() updateWishDto: UpdateWishDto,
   ) {
-    return this.wishesService.updateWishSafely(+id, req.user.id, updateWishDto);
+    const userId = getUserFromReq(req)?.id;
+    return this.wishesService.update(wishId, userId, updateWishDto);
   }
 
   @UseGuards(JwtAuthGuard)
-  @Delete(':id')
-  async remove(@Param('id') id: string, @Request() req) {
-    const result = await this.wishesService.deleteWishSafely(+id, req.user.id);
-    return { success: result, message: 'Подарок успешно удален' };
+  @Delete(':wishId')
+  remove(@Param('wishId') wishId: number, @Req() req) {
+    const userId = getUserFromReq(req)?.id;
+    return this.wishesService.remove(wishId, userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':wishId/copy')
+  copy(@Param('wishId') wishId: number, @Req() req) {
+    const user = getUserFromReq(req);
+    return this.wishesService.copyWish(wishId, user);
   }
 }
