@@ -1,83 +1,171 @@
+/* eslint-disable @typescript-eslint/no-unused-vars */
 import {
-  BadRequestException,
-  ConflictException,
   Injectable,
+  ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
-import { CreateOfferDto } from './dto/create-offer.dto';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Offer } from './entities/offer.entity';
-import { DataSource, Repository } from 'typeorm';
-import { WishesService } from '../wishes/wishes.service';
-import { User } from '../users/entities/user.entity';
+import { Repository, FindManyOptions, FindOneOptions } from 'typeorm';
+import { Offer } from '../entities/offer.entity';
 
 @Injectable()
 export class OffersService {
   constructor(
     @InjectRepository(Offer)
-    private readonly offerRepository: Repository<Offer>,
-    private readonly wishesService: WishesService,
-    private readonly dataSource: DataSource,
+    private offersRepository: Repository<Offer>,
   ) {}
 
-  async create(user: User, createOfferDto: CreateOfferDto) {
-    const queryRunner = this.dataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      const wish = await this.wishesService.findByIdWithOwner(
-        createOfferDto.itemId,
-      );
-      if (!wish) {
-        throw new NotFoundException('Подарок не найден');
-      }
-
-      if (wish.owner.id === user.id) {
-        throw new ConflictException('Вы не можете скидываться на свои подарки');
-      }
-
-      const total = Number(wish.raised) + Number(createOfferDto.amount);
-      if (total > Number(wish.price)) {
-        throw new BadRequestException(
-          'Ожидаемая сумма собранных средств превышает стоимость подарка',
-        );
-      }
-
-      await this.wishesService.updateWishRaisedSum(
-        createOfferDto.itemId,
-        total,
-      );
-      const offer = await this.offerRepository.save({
-        ...createOfferDto,
-        user,
-        item: wish,
-      });
-      await queryRunner.commitTransaction();
-      return offer;
-    } catch (err) {
-      await queryRunner.rollbackTransaction();
-      throw err;
-    } finally {
-      await queryRunner.release();
-    }
+  async create(offerData: Partial<Offer>): Promise<Offer> {
+    const offer = this.offersRepository.create(offerData);
+    return this.offersRepository.save(offer);
   }
 
-  async findAll() {
-    return await this.offerRepository.find({
-      relations: ['item', 'user'],
+  async findMany(query: FindManyOptions<Offer> = {}): Promise<Offer[]> {
+    const defaultOptions: FindManyOptions<Offer> = {
+      relations: ['user', 'item'],
+      ...query,
+    };
+    return this.offersRepository.find(defaultOptions);
+  }
+
+  async findOne(query: FindOneOptions<Offer>): Promise<Offer | null> {
+    const defaultOptions: FindOneOptions<Offer> = {
+      relations: ['user', 'item'],
+      ...query,
+    };
+    return this.offersRepository.findOne(defaultOptions);
+  }
+
+  async updateOne(
+    query: FindOneOptions<Offer>,
+    updateData: Partial<Offer>,
+  ): Promise<Offer | null> {
+    const offer = await this.findOne(query);
+    if (!offer) return null;
+
+    Object.assign(offer, updateData);
+    return this.offersRepository.save(offer);
+  }
+
+  async removeOne(query: FindOneOptions<Offer>): Promise<boolean> {
+    const offer = await this.findOne(query);
+    if (!offer) return false;
+
+    await this.offersRepository.remove(offer);
+    return true;
+  }
+
+  async findAll(): Promise<Offer[]> {
+    return this.findMany();
+  }
+
+  async findById(id: number): Promise<Offer | null> {
+    return this.findOne({ where: { id } });
+  }
+
+  async findByWish(wishId: number): Promise<Offer[]> {
+    return this.findMany({ where: { item: { id: wishId } } });
+  }
+
+  async findByUser(userId: number): Promise<Offer[]> {
+    return this.findMany({ where: { user: { id: userId } } });
+  }
+
+  async update(id: number, offerData: Partial<Offer>): Promise<Offer | null> {
+    return this.updateOne({ where: { id } }, offerData);
+  }
+
+  async remove(id: number): Promise<boolean> {
+    return this.removeOne({ where: { id } });
+  }
+
+  async findOffersWithDetails(): Promise<Offer[]> {
+    return this.findMany({
+      relations: [
+        'user',
+        'item',
+        'item.owner',
+        'item.wishlist',
+        'item.wishlist.user',
+      ],
     });
   }
 
-  async findOne(id: number) {
-    const offer = await this.offerRepository.findOne({
+  async findOfferWithFullDetails(id: number): Promise<Offer | null> {
+    return this.findOne({
       where: { id },
-      relations: ['item', 'user'],
+      relations: [
+        'user',
+        'item',
+        'item.owner',
+        'item.wishlist',
+        'item.wishlist.user',
+      ],
     });
+  }
+
+  async canUpdateOffer(offerId: number, userId: number): Promise<boolean> {
+    const offer = await this.findById(offerId);
 
     if (!offer) {
-      throw new NotFoundException('Предложение не найдено');
+      throw new NotFoundException(`Предложение с ID ${offerId} не найдено`);
     }
-    return offer;
+
+    if (offer.userId !== userId) {
+      throw new ForbiddenException('Вы не можете изменять чужие предложения');
+    }
+
+    return true;
+  }
+
+  async canDeleteOffer(offerId: number, userId: number): Promise<boolean> {
+    const offer = await this.findById(offerId);
+
+    if (!offer) {
+      throw new NotFoundException(`Предложение с ID ${offerId} не найдено`);
+    }
+
+    if (offer.userId !== userId) {
+      throw new ForbiddenException('Вы не можете удалять чужие предложения');
+    }
+
+    return true;
+  }
+
+  async updateOfferSafely(
+    offerId: number,
+    userId: number,
+    updateData: Partial<Offer>,
+  ): Promise<Offer> {
+    await this.canUpdateOffer(offerId, userId);
+
+    const {
+      id,
+      userId: newUserId,
+      itemId,
+      user,
+      item,
+      ...safeUpdateData
+    } = updateData;
+
+    const updatedOffer = await this.update(offerId, safeUpdateData);
+
+    if (!updatedOffer) {
+      throw new NotFoundException(`Предложение с ID ${offerId} не найдено`);
+    }
+
+    return updatedOffer;
+  }
+
+  async deleteOfferSafely(offerId: number, userId: number): Promise<boolean> {
+    await this.canDeleteOffer(offerId, userId);
+
+    const result = await this.remove(offerId);
+
+    if (!result) {
+      throw new NotFoundException(`Предложение с ID ${offerId} не найдено`);
+    }
+
+    return result;
   }
 }

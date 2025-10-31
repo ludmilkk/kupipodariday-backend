@@ -1,61 +1,31 @@
 import {
-  ConflictException,
   Injectable,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import {
-  Repository,
-  FindManyOptions,
-  FindOneOptions,
-  FindOptionsWhere,
-  Like,
-  QueryFailedError,
-} from 'typeorm';
-import { CreateUserDto } from './dto/create-user.dto';
-import { UpdateUserDto } from './dto/update-user.dto';
-import { User } from './entities/user.entity';
-import { createHashPass } from '../common/helpers/hash';
-import { Wish } from '../wishes/entities/wish.entity';
+import { Repository, FindManyOptions, FindOneOptions, Like } from 'typeorm';
+import { User } from '../entities/user.entity';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(User)
-    private userRepository: Repository<User>,
+    private usersRepository: Repository<User>,
   ) {}
 
-  async create(createUserDto: CreateUserDto) {
-    const hashedPass = await createHashPass(createUserDto.password);
-    let newUser: User;
-    try {
-      newUser = await this.userRepository.save({
-        ...createUserDto,
-        password: hashedPass,
-      });
-    } catch (err) {
-      if (err instanceof QueryFailedError) {
-        const newErr = err.driverError;
-        if (newErr.code === '23505') {
-          throw new ConflictException(
-            'Пользователь с таким email или username уже зарегистрирован',
-          );
-        }
-      }
-    }
-    return this.findById(newUser.id, true);
+  // CRUD методы с query-фильтрами
+  async create(userData: Partial<User>): Promise<User> {
+    const user = this.usersRepository.create(userData);
+    return this.usersRepository.save(user);
   }
 
-  async findMany(query: string) {
-    return this.userRepository
-      .createQueryBuilder('user')
-      .where(
-        'LOWER(user.username) LIKE LOWER(:query) OR (user.email) LIKE LOWER(:query)',
-        { query: `%${query}%` },
-      )
-      .addSelect('user.email')
-      .getMany();
+  async findMany(query: FindManyOptions<User> = {}): Promise<User[]> {
+    const defaultOptions: FindManyOptions<User> = {
+      relations: ['wishlists', 'offers', 'wishes'],
+      ...query,
+    };
+    return this.usersRepository.find(defaultOptions);
   }
 
   async findOne(query: FindOneOptions<User>): Promise<User | null> {
@@ -63,7 +33,7 @@ export class UsersService {
       relations: ['wishlists', 'offers', 'wishes'],
       ...query,
     };
-    return this.userRepository.findOne(defaultOptions);
+    return this.usersRepository.findOne(defaultOptions);
   }
 
   async updateOne(
@@ -74,105 +44,39 @@ export class UsersService {
     if (!user) return null;
 
     Object.assign(user, updateData);
-    return this.userRepository.save(user);
+    return this.usersRepository.save(user);
   }
 
   async removeOne(query: FindOneOptions<User>): Promise<boolean> {
     const user = await this.findOne(query);
     if (!user) return false;
 
-    await this.userRepository.remove(user);
+    await this.usersRepository.remove(user);
     return true;
   }
 
+  // Специализированные методы для обратной совместимости
   async findAll(): Promise<User[]> {
-    return this.userRepository.find();
+    return this.findMany();
   }
 
-  async findById(id: number, withEmail = false) {
-    let query = this.userRepository
-      .createQueryBuilder('user')
-      .where('user.id = :id', { id });
-    if (withEmail) {
-      query = query.addSelect('user.email');
-    }
-    const user = await query.getOne();
-
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    return user;
+  async findById(id: number): Promise<User | null> {
+    return this.findOne({ where: { id } });
   }
 
   async findByEmail(email: string): Promise<User | null> {
     return this.findOne({ where: { email } });
   }
 
-  async findByUsername(username: string, withPassword = false) {
-    let query = this.userRepository
-      .createQueryBuilder('user')
-      .where('LOWER(user.username) LIKE LOWER(:username)', { username })
-      .addSelect('user.email');
-    if (withPassword) {
-      query = query.addSelect('user.password');
-    }
-
-    const user = await query.getOne();
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    return user;
+  async update(id: number, userData: Partial<User>): Promise<User | null> {
+    return this.updateOne({ where: { id } }, userData);
   }
 
-  async update(id: number, updateUserDto: UpdateUserDto) {
-    if (updateUserDto.password) {
-      updateUserDto.password = await createHashPass(updateUserDto.password);
-    }
-
-    try {
-      await this.userRepository.update(id, updateUserDto);
-    } catch (err) {
-      if (err instanceof QueryFailedError) {
-        const newErr = err.driverError;
-        if (newErr.code === '23505') {
-          throw new ConflictException(
-            'Пользователь с таким email или username уже зарегистрирован',
-          );
-        }
-      }
-    }
-    return this.findById(id, true);
+  async remove(id: number): Promise<boolean> {
+    return this.removeOne({ where: { id } });
   }
 
-  async getUserWishes(id: number) {
-    const user = await this.userRepository.findOne({
-      where: { id },
-      relations: ['wishes', 'wishes.owner', 'wishes.offers'],
-    });
-
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-
-    return user.wishes;
-  }
-
-  async getWishesByUsername(username: string) {
-    const user = await this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.wishes', 'wishes')
-      .leftJoinAndSelect('wishes.offers', 'offers')
-      .where('LOWER(user.username) LIKE LOWER(:username)', { username })
-      .addSelect('user.email')
-      .getOne();
-
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-
-    return user.wishes;
-  }
-
+  // Методы для работы со связанными данными
   async findUserWithWishlists(id: number): Promise<User | null> {
     return this.findOne({
       where: { id },
@@ -194,14 +98,15 @@ export class UsersService {
     });
   }
 
+  // Методы поиска пользователей
   async searchUsers(searchQuery: string): Promise<User[]> {
     const query = searchQuery.toLowerCase().trim();
 
     if (!query) {
-      return this.userRepository.find();
+      return this.findMany();
     }
 
-    return this.userRepository.find({
+    return this.findMany({
       where: [{ username: Like(`%${query}%`) }, { email: Like(`%${query}%`) }],
       relations: ['wishlists', 'offers', 'wishes'],
     });
@@ -209,10 +114,10 @@ export class UsersService {
 
   async searchUsersByUsername(username: string): Promise<User[]> {
     if (!username.trim()) {
-      return this.userRepository.find();
+      return this.findMany();
     }
 
-    return this.userRepository.find({
+    return this.findMany({
       where: { username: Like(`%${username}%`) },
       relations: ['wishlists', 'offers', 'wishes'],
     });
@@ -220,10 +125,10 @@ export class UsersService {
 
   async searchUsersByEmail(email: string): Promise<User[]> {
     if (!email.trim()) {
-      return this.userRepository.find();
+      return this.findMany();
     }
 
-    return this.userRepository.find({
+    return this.findMany({
       where: { email: Like(`%${email}%`) },
       relations: ['wishlists', 'offers', 'wishes'],
     });
@@ -238,8 +143,9 @@ export class UsersService {
   }): Promise<{ users: User[]; total: number }> {
     const { query, username, email, limit = 10, offset = 0 } = criteria;
 
-    let whereConditions: FindOptionsWhere<User>[] = [];
+    let whereConditions: any[] = [];
 
+    // Если есть общий поисковый запрос
     if (query && query.trim()) {
       const searchQuery = query.toLowerCase().trim();
       whereConditions.push(
@@ -247,6 +153,7 @@ export class UsersService {
         { email: Like(`%${searchQuery}%`) },
       );
     } else {
+      // Если есть конкретные критерии
       if (username && username.trim()) {
         whereConditions.push({ username: Like(`%${username}%`) });
       }
@@ -255,11 +162,12 @@ export class UsersService {
       }
     }
 
+    // Если нет условий поиска, возвращаем всех пользователей
     if (whereConditions.length === 0) {
       whereConditions = [{}];
     }
 
-    const [users, total] = await this.userRepository.findAndCount({
+    const [users, total] = await this.usersRepository.findAndCount({
       where: whereConditions,
       relations: ['wishlists', 'offers', 'wishes'],
       take: limit,
@@ -270,6 +178,13 @@ export class UsersService {
     return { users, total };
   }
 
+  // Методы проверки прав доступа
+  /**
+   * Проверяет, может ли пользователь обновить профиль
+   * @param targetUserId - ID пользователя, профиль которого обновляется
+   * @param currentUserId - ID текущего пользователя
+   * @returns true если может, иначе выбрасывает исключение
+   */
   async canUpdateUser(
     targetUserId: number,
     currentUserId: number,
@@ -288,6 +203,12 @@ export class UsersService {
     return true;
   }
 
+  /**
+   * Проверяет, может ли пользователь удалить профиль
+   * @param targetUserId - ID пользователя, который удаляется
+   * @param currentUserId - ID текущего пользователя
+   * @returns true если может, иначе выбрасывает исключение
+   */
   async canDeleteUser(
     targetUserId: number,
     currentUserId: number,
@@ -306,17 +227,27 @@ export class UsersService {
     return true;
   }
 
+  /**
+   * Безопасное обновление пользователя с проверкой прав
+   * @param userId - ID пользователя
+   * @param currentUserId - ID текущего пользователя
+   * @param updateData - данные для обновления
+   * @returns обновленный пользователь
+   */
   async updateUserSafely(
     userId: number,
     currentUserId: number,
     updateData: Partial<User>,
   ): Promise<User> {
+    // Проверяем права на обновление
     await this.canUpdateUser(userId, currentUserId);
 
+    // Запрещаем изменение чувствительных полей
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { id, password, wishlists, offers, wishes, ...safeUpdateData } =
       updateData;
 
+    // Выполняем базовое обновление
     const updatedUser = await this.update(userId, safeUpdateData);
 
     if (!updatedUser) {
@@ -326,194 +257,26 @@ export class UsersService {
     return updatedUser;
   }
 
+  /**
+   * Безопасное удаление пользователя с проверкой прав
+   * @param userId - ID пользователя
+   * @param currentUserId - ID текущего пользователя
+   * @returns true если удалено успешно
+   */
   async deleteUserSafely(
     userId: number,
     currentUserId: number,
   ): Promise<boolean> {
+    // Проверяем права на удаление
     await this.canDeleteUser(userId, currentUserId);
 
-    const result = await this.removeOne({ where: { id: userId } });
+    // Выполняем базовое удаление
+    const result = await this.remove(userId);
 
     if (!result) {
       throw new NotFoundException(`Пользователь с ID ${userId} не найден`);
     }
 
     return result;
-  }
-
-  parseQueryParams(
-    query: Record<string, string | undefined>,
-  ): FindManyOptions<User> {
-    const findOptions: Partial<FindManyOptions<User>> = {};
-
-    if (query.where) {
-      try {
-        findOptions.where = JSON.parse(query.where);
-      } catch (e) {
-        if (query.email) findOptions.where = { email: query.email };
-        if (query.username) {
-          findOptions.where = {
-            ...findOptions.where,
-            username: query.username,
-          };
-        }
-      }
-    }
-
-    if (query.relations) {
-      findOptions.relations = query.relations.split(',');
-    }
-
-    if (query.take) findOptions.take = parseInt(query.take);
-    if (query.skip) findOptions.skip = parseInt(query.skip);
-
-    return findOptions;
-  }
-
-  getUserWithoutPassword(user: User | null): Omit<User, 'password'> {
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, ...userWithoutPassword } = user;
-    return userWithoutPassword;
-  }
-
-  getUserPublic(user: User | null): Omit<User, 'password' | 'email'> {
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { password, email, ...userPublic } = user;
-    return userPublic;
-  }
-
-  async findOwnUser(userId: number): Promise<Omit<User, 'password'>> {
-    const user = await this.findById(userId);
-    return this.getUserWithoutPassword(user);
-  }
-
-  async deleteUserWithResponse(
-    userId: number,
-    currentUserId: number,
-  ): Promise<{ success: boolean; message: string }> {
-    const result = await this.deleteUserSafely(userId, currentUserId);
-    return { success: result, message: 'Профиль успешно удален' };
-  }
-
-  async searchUsersFromDto(searchDto: {
-    query?: string;
-    username?: string;
-    email?: string;
-  }): Promise<User[] | { users: User[]; total: number }> {
-    const { query, username, email } = searchDto;
-
-    if (query) {
-      return this.searchUsers(query);
-    }
-
-    if (username || email) {
-      const criteria: { username?: string; email?: string } = {};
-      if (username) criteria.username = username;
-      if (email) criteria.email = email;
-
-      return this.searchUsersAdvanced(criteria);
-    }
-
-    return this.findAll();
-  }
-
-  async updateUser(
-    userId: number,
-    updateUserDto: {
-      username?: string;
-      about?: string;
-      avatar?: string;
-      email?: string;
-      password?: string;
-    },
-  ): Promise<Omit<User, 'password'>> {
-    const existingUser = await this.findById(userId);
-    if (!existingUser) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-
-    if (updateUserDto.email && updateUserDto.email !== existingUser.email) {
-      const userWithEmail = await this.findByEmail(updateUserDto.email);
-      if (userWithEmail) {
-        throw new ForbiddenException(
-          'Пользователь с таким email уже существует',
-        );
-      }
-    }
-
-    if (
-      updateUserDto.username &&
-      updateUserDto.username !== existingUser.username
-    ) {
-      const userWithUsername = await this.findOne({
-        where: { username: updateUserDto.username },
-      });
-      if (userWithUsername) {
-        throw new ForbiddenException(
-          'Пользователь с таким именем уже существует',
-        );
-      }
-    }
-
-    if (updateUserDto.password) {
-      updateUserDto.password = await createHashPass(updateUserDto.password);
-    }
-
-    const updatedUser = await this.update(userId, updateUserDto);
-
-    return this.getUserWithoutPassword(updatedUser);
-  }
-
-  async findUsersByQuery(query: string): Promise<Omit<User, 'password'>[]> {
-    const users = await this.searchUsers(query);
-    return users.map((user) => this.getUserWithoutPassword(user));
-  }
-
-  async findUserPublicByUsername(
-    username: string,
-  ): Promise<Omit<User, 'password' | 'email'>> {
-    const user = await this.findByUsername(username);
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    return this.getUserPublic(user);
-  }
-
-  async findUserWishesByUsername(username: string): Promise<Wish[]> {
-    const user = await this.findByUsername(username);
-    if (!user) {
-      throw new NotFoundException('Пользователь не найден');
-    }
-    return this.userRepository
-      .createQueryBuilder('user')
-      .leftJoinAndSelect('user.wishes', 'wish')
-      .leftJoinAndSelect('wish.offers', 'offer')
-      .where('user.id = :userId', { userId: user.id })
-      .getOne()
-      .then((userWithWishes) => userWithWishes?.wishes || []);
-  }
-
-  async findOwnWishes(userId: number): Promise<Wish[]> {
-    const userWithWishes = await this.findUserWithWishes(userId);
-    return userWithWishes?.wishes || [];
-  }
-
-  async updateOwnUser(
-    userId: number,
-    updateUserDto: {
-      username?: string;
-      about?: string;
-      avatar?: string;
-      email?: string;
-      password?: string;
-    },
-  ): Promise<Omit<User, 'password'>> {
-    return this.updateUser(userId, updateUserDto);
   }
 }
